@@ -2,39 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 from pathlib import Path
 import secrets
 import sqlite3
-from typing import Any, Callable, Literal
+from typing import Any
 
-
-ActionStatus = Literal["running", "success", "failed", "unknown"]
-ExecuteFn = Callable[[dict[str, Any], str | None], Any]
-InspectFn = Callable[[dict[str, Any], str | None], Any | None]
-
-
-class UnknownOutcome(RuntimeError):
-    """The external request may have succeeded, but its response was lost."""
-
-
-@dataclass(frozen=True)
-class Tool:
-    """A side-effecting operation and its read-only state inspector."""
-
-    name: str
-    execute: ExecuteFn
-    inspect: InspectFn | None = None
-
-
-@dataclass(frozen=True)
-class ActionResult:
-    action_id: str
-    tool_name: str
-    status: ActionStatus
-    result: Any = None
-    error: str | None = None
+from agent_recovery.core.actions import (
+    ActionResult,
+    ActionStatus,
+    ExecuteFn,
+    InspectFn,
+    Tool,
+    UnknownOutcome,
+)
 
 
 class Runtime:

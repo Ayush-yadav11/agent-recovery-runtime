@@ -6,6 +6,11 @@ from typing import Any
 import unittest
 
 from agent_recovery import Runtime, Tool, UnknownOutcome
+from agent_recovery.core.actions import (
+    ActionResult as CoreActionResult,
+    Tool as CoreTool,
+    UnknownOutcome as CoreUnknownOutcome,
+)
 
 
 class FakeIssueService:
@@ -54,6 +59,11 @@ class RuntimeTests(unittest.TestCase):
     def tearDown(self) -> None:
         if hasattr(self, "tempdir"):
             self.tempdir.cleanup()
+
+    def test_public_action_types_are_owned_by_core_module(self) -> None:
+        self.assertIs(Tool, CoreTool)
+        self.assertIs(UnknownOutcome, CoreUnknownOutcome)
+        self.assertEqual(CoreActionResult.__module__, "agent_recovery.core.actions")
 
     def test_successful_idempotent_action_is_not_executed_twice(self) -> None:
         service = FakeIssueService()
