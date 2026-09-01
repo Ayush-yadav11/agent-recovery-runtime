@@ -2,9 +2,11 @@ import unittest
 from tempfile import TemporaryDirectory
 from typing import Any
 
+import httpx
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agent_recovery import Runtime, Tool, UnknownOutcome
+from agent_recovery.integrations.github import GitHubClient
 from agent_recovery.langgraph.state import RecoveryState
 from agent_recovery.langgraph.workflow import (
     build_recovery_graph,
@@ -67,6 +69,64 @@ class RoutingTests(unittest.TestCase):
 
 
 class GraphExecutionTests(unittest.TestCase):
+    def test_github_client_runs_through_unknown_inspect_and_retry(self) -> None:
+        requests: list[httpx.Request] = []
+        post_calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal post_calls
+            requests.append(request)
+            if request.method == "POST":
+                post_calls += 1
+                if post_calls == 1:
+                    raise httpx.ReadTimeout("response lost", request=request)
+                return httpx.Response(201, json={"id": 42}, request=request)
+            return httpx.Response(200, json=[], request=request)
+
+        client = GitHubClient("test-token", transport=httpx.MockTransport(handler))
+        with TemporaryDirectory() as directory:
+            runtime = Runtime(f"{directory}/actions.db")
+            runtime.register(
+                Tool(
+                    name="github.create_issue",
+                    execute=lambda arguments, key: client.create_issue(
+                        arguments["owner"],
+                        arguments["repository"],
+                        arguments["title"],
+                        arguments["body"],
+                        key,
+                    ),
+                    inspect=lambda arguments, key: client.find_issue_by_idempotency_key(
+                        arguments["owner"], arguments["repository"], key
+                    ),
+                )
+            )
+            graph = build_recovery_graph(
+                runtime,
+                "github.create_issue",
+                arguments_builder=lambda state: {
+                    "owner": state["owner"],
+                    "repository": state["repository"],
+                    "title": state["title"],
+                    "body": state["body"],
+                },
+            )
+            result = graph.invoke(
+                {
+                    "owner": "owner",
+                    "repository": "repo",
+                    "title": "Login is broken",
+                    "body": "Customer report",
+                    "idempotency_key": "customer-123",
+                }
+            )
+            runtime.close()
+        client.close()
+
+        self.assertEqual(result["action_status"], "success")
+        self.assertEqual(post_calls, 2)
+        self.assertEqual(len(requests), 3)
+
     def test_graph_executes_a_successful_tool(self) -> None:
         calls: list[dict[str, Any]] = []
 

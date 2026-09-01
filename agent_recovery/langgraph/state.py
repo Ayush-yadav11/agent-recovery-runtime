@@ -7,6 +7,8 @@ from typing_extensions import TypedDict
 
 
 class RecoveryState(TypedDict, total=False):
+    owner: str
+    repository: str
     title: str
     body: str
     idempotency_key: str
