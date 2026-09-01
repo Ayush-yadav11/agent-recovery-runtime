@@ -6,6 +6,8 @@ from typing import Any, TypeAlias
 
 import httpx
 
+from agent_recovery.core.actions import UnknownOutcome
+
 
 Transport: TypeAlias = httpx.BaseTransport
 
@@ -42,12 +44,19 @@ class GitHubClient:
     ) -> dict[str, Any]:
         marker = idempotency_marker(idempotency_key)
         marked_body = body if marker in body else f"{body.rstrip()}\n\n{marker}"
-        response = self._client.post(
-            f"/repos/{owner}/{repository}/issues",
-            json={"title": title, "body": marked_body},
-        )
+        try:
+            response = self._client.post(
+                f"/repos/{owner}/{repository}/issues",
+                json={"title": title, "body": marked_body},
+            )
+        except httpx.TransportError as exc:
+            raise UnknownOutcome("GitHub create response was lost") from exc
+
         response.raise_for_status()
-        return _json_object(response)
+        try:
+            return _json_object(response)
+        except ValueError as exc:
+            raise UnknownOutcome("GitHub create response could not be decoded") from exc
 
     def find_issue_by_idempotency_key(
         self,

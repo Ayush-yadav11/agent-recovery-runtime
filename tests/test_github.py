@@ -3,6 +3,7 @@ import unittest
 
 import httpx
 
+from agent_recovery import UnknownOutcome
 from agent_recovery.integrations.github import GitHubClient
 
 
@@ -59,6 +60,45 @@ class GitHubClientTests(unittest.TestCase):
         client.close()
 
         self.assertEqual(issue, {"id": 2, "body": f"body\n{MARKER}"})
+
+    def test_create_timeout_becomes_unknown_outcome(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("response lost after dispatch", request=request)
+
+        client = GitHubClient("test-token", transport=httpx.MockTransport(handler))
+        with self.assertRaises(UnknownOutcome):
+            client.create_issue(
+                "owner",
+                "repo",
+                "Login is broken",
+                "Customer report",
+                "customer-123",
+            )
+        client.close()
+
+    def test_create_client_error_remains_a_normal_http_failure(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(422, json={"message": "Validation Failed"}, request=request)
+
+        client = GitHubClient("test-token", transport=httpx.MockTransport(handler))
+        with self.assertRaises(httpx.HTTPStatusError):
+            client.create_issue(
+                "owner",
+                "repo",
+                "Login is broken",
+                "Customer report",
+                "customer-123",
+            )
+        client.close()
+
+    def test_inspector_timeout_remains_a_verification_exception(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("lookup timed out", request=request)
+
+        client = GitHubClient("test-token", transport=httpx.MockTransport(handler))
+        with self.assertRaises(httpx.ReadTimeout):
+            client.find_issue_by_idempotency_key("owner", "repo", "customer-123")
+        client.close()
 
     def test_find_issue_returns_none_when_marker_is_absent(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
