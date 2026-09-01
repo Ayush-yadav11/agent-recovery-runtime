@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
 from typing import Any
 
 from agent_recovery.core.actions import ActionStatus
+
+
+_CREATE_ACTIONS = """
+CREATE TABLE actions (
+    action_id TEXT PRIMARY KEY,
+    tool_name TEXT NOT NULL,
+    arguments_json TEXT NOT NULL,
+    arguments_hash TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    result_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tool_name, idempotency_key, attempt)
+)
+"""
 
 
 @dataclass(frozen=True)
@@ -108,25 +127,22 @@ class ActionStore:
     def close(self) -> None:
         self._connection.close()
 
-
     def _create_schema(self) -> None:
+        action_table = self._connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actions'"
+        ).fetchone()
+        if action_table is None:
+            self._connection.executescript(_CREATE_ACTIONS)
+        else:
+            columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(actions)")
+            }
+            if {"arguments_hash", "attempt"} - columns:
+                self._migrate_legacy_actions()
+
         self._connection.executescript(
             """
-            CREATE TABLE IF NOT EXISTS actions (
-                action_id TEXT PRIMARY KEY,
-                tool_name TEXT NOT NULL,
-                arguments_json TEXT NOT NULL,
-                arguments_hash TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL,
-                attempt INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                result_json TEXT,
-                error TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (tool_name, idempotency_key, attempt)
-            );
-
             CREATE INDEX IF NOT EXISTS actions_latest_key
             ON actions (tool_name, idempotency_key, attempt DESC);
 
@@ -141,6 +157,42 @@ class ActionStore:
         )
         self._connection.commit()
 
+    def _migrate_legacy_actions(self) -> None:
+        self._connection.execute("PRAGMA foreign_keys = OFF")
+        legacy_rows = self._connection.execute(
+            """
+            SELECT action_id, tool_name, arguments_json, idempotency_key,
+                   status, result_json, error, created_at, updated_at
+            FROM actions
+            """
+        ).fetchall()
+        self._connection.execute("ALTER TABLE actions RENAME TO actions_legacy")
+        self._connection.executescript(_CREATE_ACTIONS)
+        for row in legacy_rows:
+            arguments = json.loads(row["arguments_json"])
+            self._connection.execute(
+                """
+                INSERT INTO actions
+                    (action_id, tool_name, arguments_json, arguments_hash,
+                     idempotency_key, attempt, status, result_json, error,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["action_id"],
+                    row["tool_name"],
+                    row["arguments_json"],
+                    _arguments_hash(arguments),
+                    row["idempotency_key"],
+                    row["status"],
+                    row["result_json"],
+                    row["error"],
+                    row["created_at"],
+                    row["updated_at"],
+                ),
+            )
+        self._connection.execute("DROP TABLE actions_legacy")
+
 
 def _to_action(row: sqlite3.Row) -> StoredAction:
     return StoredAction(
@@ -154,6 +206,10 @@ def _to_action(row: sqlite3.Row) -> StoredAction:
         result=json.loads(row["result_json"]) if row["result_json"] is not None else None,
         error=row["error"],
     )
+
+
+def _arguments_hash(arguments: dict[str, Any]) -> str:
+    return hashlib.sha256(_encode(arguments).encode("utf-8")).hexdigest()
 
 
 def _encode(value: Any) -> str:

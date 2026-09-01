@@ -90,7 +90,7 @@ class GitHubClient:
                 raise ValueError("GitHub issues response must be a list")
 
             for issue in payload:
-                if not isinstance(issue, dict):
+                if not isinstance(issue, dict) or "pull_request" in issue:
                     continue
                 body = issue.get("body") or ""
                 if marker in body:

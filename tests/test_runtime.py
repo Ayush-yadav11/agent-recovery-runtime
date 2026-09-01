@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 from typing import Any
+import sqlite3
 import unittest
 
 from agent_recovery import Runtime, Tool, UnknownOutcome
+from agent_recovery.core.store import ActionStore
 from agent_recovery.core.actions import (
     ActionResult as CoreActionResult,
     Tool as CoreTool,
@@ -59,6 +61,11 @@ class RuntimeTests(unittest.TestCase):
     def runtime(self, service: FakeIssueService) -> Runtime:
         self.tempdir = TemporaryDirectory()
         runtime = Runtime(f"{self.tempdir.name}/runs.db")
+        runtime.register(ToolFixture(service).tool())
+        return runtime
+
+    def runtime_from_database(self, database: str, service: FakeIssueService) -> Runtime:
+        runtime = Runtime(database)
         runtime.register(ToolFixture(service).tool())
         return runtime
 
@@ -266,7 +273,7 @@ class RuntimeTests(unittest.TestCase):
         runtime = self.runtime(service)
         result = runtime.execute("create_issue", {"title": "A"}, idempotency_key="a")
 
-        with self.assertRaisesRegex(ValueError, "only unknown actions can be recovered"):
+        with self.assertRaisesRegex(ValueError, "only unknown or running actions can be recovered"):
             runtime.recover(result.action_id)
 
     def test_recovery_state_survives_runtime_restart(self) -> None:
@@ -298,6 +305,74 @@ class RuntimeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "idempotency_key"):
             runtime.execute("create_issue", {"title": "A"})
+    def test_legacy_action_schema_is_migrated(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = f"{directory}/legacy.db"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE actions (
+                    action_id TEXT PRIMARY KEY,
+                    tool_name TEXT NOT NULL,
+                    arguments_json TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_json TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (tool_name, idempotency_key)
+                );
+                CREATE TABLE events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO actions
+                    (action_id, tool_name, arguments_json, idempotency_key, status, result_json)
+                VALUES
+                    ('legacy-1', 'create_issue', '{"title":"Login"}', 'legacy-key', 'success', '{"id":"issue-1"}');
+                """
+            )
+            connection.close()
+
+            service = FakeIssueService()
+            runtime = self.runtime_from_database(database, service)
+            result = runtime.execute(
+                "create_issue",
+                {"title": "Login"},
+                idempotency_key="legacy-key",
+            )
+            runtime.close()
+
+        self.assertEqual(result.action_id, "legacy-1")
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.attempt, 1)
+        self.assertEqual(service.create_calls, 0)
+
+    def test_running_action_can_be_recovered_after_restart(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = f"{directory}/crashed.db"
+            store = ActionStore(database)
+            store.create_action(
+                action_id="crashed-1",
+                tool_name="create_issue",
+                arguments={"title": "Login"},
+                arguments_hash="hash",
+                idempotency_key="crashed-key",
+            )
+            store.close()
+
+            service = FakeIssueService()
+            service.issues["crashed-key"] = {"id": "issue-1", "title": "Login"}
+            runtime = self.runtime_from_database(database, service)
+            recovered = runtime.recover("crashed-1")
+            runtime.close()
+
+        self.assertEqual(recovered.status, "success")
+        self.assertEqual(service.create_calls, 0)
 
 
 if __name__ == "__main__":

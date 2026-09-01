@@ -116,6 +116,26 @@ class GitHubClientTests(unittest.TestCase):
             client.find_issue_by_idempotency_key("owner", "repo", "customer-123")
         client.close()
 
+    def test_find_issue_ignores_pull_requests_with_matching_marker(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": 10,
+                        "body": MARKER,
+                        "pull_request": {"url": "https://api.github.com/pulls/10"},
+                    }
+                ],
+                request=request,
+            )
+
+        client = GitHubClient("test-token", transport=httpx.MockTransport(handler))
+        issue = client.find_issue_by_idempotency_key("owner", "repo", "customer-123")
+        client.close()
+
+        self.assertIsNone(issue)
+
     def test_find_issue_returns_none_when_marker_is_absent(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

@@ -94,8 +94,15 @@ class Runtime:
 
     def recover(self, action_id: str) -> ActionResult:
         row = self._get_action(action_id)
-        if row.status != "unknown":
-            raise ValueError("only unknown actions can be recovered")
+        if row.status not in {"unknown", "running"}:
+            raise ValueError("only unknown or running actions can be recovered")
+        if row.status == "running":
+            self._finish(
+                action_id,
+                "unknown",
+                error="execution may have been interrupted; verification required",
+            )
+            row = self._get_action(action_id)
 
         tool = self._tools.get(row.tool_name)
         if tool is None or tool.inspect is None:
