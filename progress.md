@@ -21,10 +21,11 @@
 - Added the README command contract, runbook, offline demo, and executable check script.
 - Added environment-backed GitHub credential loading and final review checks.
 - Review found and fixed automatic graph retry after `verified_absent` and same-key re-execution after normal `failed`.
+- Review found and fixed legacy SQLite migration, persisted `running` recovery, and GitHub pull-request false matches in `05da46a`.
 
 ## Current phase
 
-Phase 6 complete. The implementation is verified at commit `e50186e` plus final review fixes. The full check passes 47 tests; the offline demo reports one create and one inspect call; secret and private-API scans are clean.
+Phase 6 complete. The implementation is verified at commit `05da46a`. The full check passes 50 tests; the offline demo reports one create and one inspect call; secret and private-API scans are clean.
 
 ## Next action
 

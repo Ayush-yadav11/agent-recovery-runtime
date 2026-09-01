@@ -41,9 +41,14 @@ Use GitHub as the first real adapter, but keep all tests offline with an injecta
 - Only the latest `verified_absent` action for a key can be retried.
 - Tests must never use live GitHub credentials or perform live writes.
 
+## Review resolutions
+
+- Legacy SQLite rows are migrated to the attempt-aware schema with computed argument hashes.
+- Persisted `running` actions can be moved to `unknown` and inspected after restart.
+- GitHub marker lookup excludes records containing pull-request metadata.
+
 ## Follow-up issues
 
-- Add a schema migration for baseline SQLite files. The current store intentionally supports the new attempt-aware schema only; opening a pre-migration file fails with `OperationalError: no such column: attempt`.
 - Human approval for ambiguous inspector results.
 - PostgreSQL action store for concurrent production workers.
 - OpenTelemetry spans and Langfuse or Phoenix export.
