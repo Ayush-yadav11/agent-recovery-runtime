@@ -528,7 +528,7 @@ Inspect all changed files for:
 Command:
 
 ```bash
-git grep -nE 'ghp_|github_pat_|BEGIN RSA PRIVATE KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY' -- . ':!.git'
+git grep -nE 'gh''p_|github''_pat_|BEGIN ''RSA PRIVATE KEY|ANTHROPIC''_API_KEY|OPENAI''_API_KEY' -- . ':!.git'
 ```
 
 Expected: no matches.
