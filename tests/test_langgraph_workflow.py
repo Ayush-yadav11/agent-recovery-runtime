@@ -1,7 +1,14 @@
 import unittest
+from tempfile import TemporaryDirectory
+from typing import Any
 
+from agent_recovery import Runtime, Tool, UnknownOutcome
 from agent_recovery.langgraph.state import RecoveryState
-from agent_recovery.langgraph.workflow import route_after_execute, route_after_verify
+from agent_recovery.langgraph.workflow import (
+    build_recovery_graph,
+    route_after_execute,
+    route_after_verify,
+)
 
 
 class RoutingTests(unittest.TestCase):
@@ -57,5 +64,101 @@ class RoutingTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
+class GraphExecutionTests(unittest.TestCase):
+    def test_graph_executes_a_successful_tool(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def create_issue(arguments: dict[str, Any], key: str | None) -> dict[str, Any]:
+            calls.append({"arguments": arguments, "key": key})
+            return {"id": "issue-1", "title": arguments["title"]}
+
+        with TemporaryDirectory() as directory:
+            runtime = Runtime(f"{directory}/actions.db")
+            runtime.register(Tool(name="create_issue", execute=create_issue))
+            graph = build_recovery_graph(runtime, "create_issue")
+
+            result = graph.invoke(
+                {
+                    "title": "Login is broken",
+                    "body": "Customer report",
+                    "idempotency_key": "customer-123",
+                }
+            )
+            runtime.close()
+
+        self.assertEqual(result["route"], "success")
+        self.assertEqual(result["action_status"], "success")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["title"], "Login is broken")
+
+    def test_graph_recovers_unknown_without_repeating_execute(self) -> None:
+        calls = 0
+        issue = {"id": "issue-1", "title": "Login is broken"}
+
+        def create_issue(arguments: dict[str, Any], key: str | None) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            raise UnknownOutcome("response lost after commit")
+
+        def inspect_issue(arguments: dict[str, Any], key: str | None) -> dict[str, Any]:
+            return issue
+
+        with TemporaryDirectory() as directory:
+            runtime = Runtime(f"{directory}/actions.db")
+            runtime.register(
+                Tool(
+                    name="create_issue",
+                    execute=create_issue,
+                    inspect=inspect_issue,
+                )
+            )
+            graph = build_recovery_graph(runtime, "create_issue")
+            result = graph.invoke(
+                {
+                    "title": issue["title"],
+                    "body": "Customer report",
+                    "idempotency_key": "customer-123",
+                }
+            )
+            runtime.close()
+
+        self.assertEqual(result["route"], "success")
+        self.assertEqual(result["action_status"], "success")
+        self.assertEqual(calls, 1)
+
+    def test_graph_retries_only_after_verified_absence(self) -> None:
+        calls = 0
+
+        def create_issue(arguments: dict[str, Any], key: str | None) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise UnknownOutcome("response lost before commit")
+            return {"id": "issue-2", "title": arguments["title"]}
+
+        def inspect_issue(arguments: dict[str, Any], key: str | None) -> None:
+            return None
+
+        with TemporaryDirectory() as directory:
+            runtime = Runtime(f"{directory}/actions.db")
+            runtime.register(
+                Tool(
+                    name="create_issue",
+                    execute=create_issue,
+                    inspect=inspect_issue,
+                )
+            )
+            graph = build_recovery_graph(runtime, "create_issue")
+            result = graph.invoke(
+                {
+                    "title": "Login is broken",
+                    "body": "Customer report",
+                    "idempotency_key": "customer-456",
+                }
+            )
+            runtime.close()
+
+        self.assertEqual(result["route"], "success")
+        self.assertEqual(result["action_status"], "success")
+        self.assertEqual(calls, 2)
+
