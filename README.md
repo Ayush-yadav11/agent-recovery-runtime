@@ -30,7 +30,13 @@ The LangGraph adapter routes these statuses explicitly and can persist graph sta
 
 ## GitHub adapter
 
-`GitHubClient` uses `httpx`, appends this marker to created issue bodies, and searches all issue states without mutating them:
+`GitHubClient` uses `httpx`, appends this marker to created issue bodies, and searches all issue states without mutating them. For live use, load credentials from the environment:
+
+```python
+from agent_recovery.integrations.github import GitHubClient
+
+client = GitHubClient.from_env()  # reads GITHUB_TOKEN
+```
 
 ```text
 <!-- agent-recovery:idempotency-key=<key> -->

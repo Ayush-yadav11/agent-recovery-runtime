@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, TypeAlias
 
 import httpx
@@ -33,6 +34,18 @@ class GitHubClient:
             },
             transport=transport,
         )
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        transport: Transport | None = None,
+        base_url: str = "https://api.github.com",
+    ) -> GitHubClient:
+        token = os.environ.get("GITHUB_TOKEN")
+        if not token:
+            raise ValueError("GITHUB_TOKEN is required")
+        return cls(token, transport=transport, base_url=base_url)
 
     def create_issue(
         self,

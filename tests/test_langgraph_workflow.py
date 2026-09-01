@@ -288,4 +288,3 @@ class GraphExecutionTests(unittest.TestCase):
         self.assertEqual(result["route"], "success")
         self.assertEqual(result["action_status"], "success")
         self.assertEqual(calls, 2)
-

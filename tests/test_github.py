@@ -1,5 +1,7 @@
 import json
+import os
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -60,6 +62,20 @@ class GitHubClientTests(unittest.TestCase):
         client.close()
 
         self.assertEqual(issue, {"id": 2, "body": f"body\n{MARKER}"})
+
+    def test_from_env_loads_github_token_without_hardcoding_credentials(self) -> None:
+        seen_auth: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_auth.append(request.headers["Authorization"])
+            return httpx.Response(201, json={"id": 1}, request=request)
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "runtime-token"}):
+            client = GitHubClient.from_env(transport=httpx.MockTransport(handler))
+            client.create_issue("owner", "repo", "Title", "Body", "customer-123")
+            client.close()
+
+        self.assertEqual(seen_auth, ["Bearer runtime-token"])
 
     def test_create_timeout_becomes_unknown_outcome(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
