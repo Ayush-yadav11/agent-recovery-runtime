@@ -18,6 +18,7 @@ class FakeIssueService:
         self.issues: dict[str, dict[str, Any]] = {}
         self.create_calls = 0
         self.fail_after_create = False
+        self.inspect_error = False
 
     def create(self, arguments: dict[str, Any], idempotency_key: str | None) -> dict[str, Any]:
         self.create_calls += 1
@@ -33,6 +34,8 @@ class FakeIssueService:
         return issue
 
     def find(self, arguments: dict[str, Any], idempotency_key: str | None) -> dict[str, Any] | None:
+        if self.inspect_error:
+            raise RuntimeError("issue lookup unavailable")
         assert idempotency_key is not None
         return self.issues.get(idempotency_key)
 
@@ -141,11 +144,99 @@ class RuntimeTests(unittest.TestCase):
 
         recovered = runtime.recover(first.action_id)
 
-        self.assertEqual(recovered.status, "failed")
+        self.assertEqual(recovered.status, "verified_absent")
         self.assertEqual(
             recovered.error,
             "verification did not find the expected side effect",
         )
+        self.assertEqual(service.create_calls, 1)
+
+    def test_verified_absence_allows_an_explicit_retry(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        runtime = self.runtime(service)
+
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        service.issues.clear()
+        absent = runtime.recover(first.action_id)
+        service.fail_after_create = False
+
+        retried = runtime.retry(first.action_id)
+
+        self.assertEqual(absent.status, "verified_absent")
+        self.assertEqual(retried.status, "success")
+        self.assertEqual(retried.attempt, 2)
+        self.assertEqual(service.create_calls, 2)
+
+    def test_verified_absence_requires_explicit_retry(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        runtime = self.runtime(service)
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        service.issues.clear()
+        runtime.recover(first.action_id)
+
+        with self.assertRaisesRegex(ValueError, "use retry"):
+            runtime.execute(
+                "create_issue",
+                {"title": "Login is broken"},
+                idempotency_key="customer-123",
+            )
+
+    def test_only_the_latest_verified_absence_can_be_retried(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        runtime = self.runtime(service)
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        service.issues.clear()
+        runtime.recover(first.action_id)
+        service.fail_after_create = False
+        retried = runtime.retry(first.action_id)
+
+        with self.assertRaisesRegex(ValueError, "latest"):
+            runtime.retry(first.action_id)
+        self.assertEqual(retried.attempt, 2)
+
+    def test_unknown_action_is_not_retryable_before_verification(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        runtime = self.runtime(service)
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+
+        with self.assertRaisesRegex(ValueError, "only verified_absent actions can be retried"):
+            runtime.retry(first.action_id)
+
+    def test_inspector_failure_keeps_action_unknown(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        service.inspect_error = True
+        runtime = self.runtime(service)
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+
+        recovered = runtime.recover(first.action_id)
+
+        self.assertEqual(recovered.status, "unknown")
+        self.assertIn("verification failed", recovered.error or "")
         self.assertEqual(service.create_calls, 1)
 
     def test_recovering_a_non_unknown_action_is_rejected(self) -> None:

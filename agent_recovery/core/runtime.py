@@ -42,6 +42,8 @@ class Runtime:
         if existing is not None:
             if existing.arguments_hash != arguments_hash:
                 raise ValueError("idempotency key reused with different arguments")
+            if existing.status == "verified_absent":
+                raise ValueError("action is verified_absent; use retry")
             if existing.status in {"running", "success", "unknown"}:
                 return _to_result(existing)
 
@@ -56,17 +58,37 @@ class Runtime:
             attempt=attempt,
         )
         self._store.add_event(action_id, "action.started", {"tool_name": tool_name})
-
-        try:
-            value = tool.execute(arguments, idempotency_key)
-        except UnknownOutcome as exc:
-            self._finish(action_id, "unknown", error=str(exc))
-        except Exception as exc:  # noqa: BLE001 - tool boundaries must be contained
-            self._finish(action_id, "failed", error=f"{type(exc).__name__}: {exc}")
-        else:
-            self._finish(action_id, "success", result=value)
-
+        self._run_tool(action_id, tool, arguments, idempotency_key)
         return self._result(action_id)
+
+    def retry(self, action_id: str) -> ActionResult:
+        row = self._get_action(action_id)
+        latest = self._store.find_latest(row.tool_name, row.idempotency_key)
+        if latest is None or latest.action_id != action_id:
+            raise ValueError("only the latest verified_absent action can be retried")
+        if row.status != "verified_absent":
+            raise ValueError("only verified_absent actions can be retried")
+
+        tool = self._tools.get(row.tool_name)
+        if tool is None:
+            raise KeyError(f"unknown tool: {row.tool_name}")
+
+        new_action_id = secrets.token_hex(12)
+        self._store.create_action(
+            action_id=new_action_id,
+            tool_name=row.tool_name,
+            arguments=row.arguments,
+            arguments_hash=row.arguments_hash,
+            idempotency_key=row.idempotency_key,
+            attempt=row.attempt + 1,
+        )
+        self._store.add_event(
+            new_action_id,
+            "action.started",
+            {"tool_name": row.tool_name, "retry_of": action_id},
+        )
+        self._run_tool(new_action_id, tool, row.arguments, row.idempotency_key)
+        return self._result(new_action_id)
 
     def recover(self, action_id: str) -> ActionResult:
         row = self._get_action(action_id)
@@ -94,7 +116,7 @@ class Runtime:
             if value is None:
                 self._finish(
                     action_id,
-                    "failed",
+                    "verified_absent",
                     error="verification did not find the expected side effect",
                 )
             else:
@@ -110,6 +132,22 @@ class Runtime:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    def _run_tool(
+        self,
+        action_id: str,
+        tool: Tool,
+        arguments: dict[str, Any],
+        idempotency_key: str,
+    ) -> None:
+        try:
+            value = tool.execute(arguments, idempotency_key)
+        except UnknownOutcome as exc:
+            self._finish(action_id, "unknown", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 - tool boundaries must be contained
+            self._finish(action_id, "failed", error=f"{type(exc).__name__}: {exc}")
+        else:
+            self._finish(action_id, "success", result=value)
 
     def _finish(
         self,

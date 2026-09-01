@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 
-ActionStatus = Literal["running", "success", "failed", "unknown"]
+ActionStatus = Literal[
+    "running",
+    "success",
+    "failed",
+    "unknown",
+    "verified_absent",
+]
 ExecuteFn = Callable[[dict[str, Any], str | None], Any]
 InspectFn = Callable[[dict[str, Any], str | None], Any | None]
 
