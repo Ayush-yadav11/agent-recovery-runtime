@@ -1,53 +1,56 @@
+"""Run the recovery workflow against a GitHub-like fake API."""
+
 from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+from typing import Any
 
 from agent_recovery import Runtime, Tool, UnknownOutcome
+from agent_recovery.langgraph.workflow import build_recovery_graph
 
 
 class FakeIssueAPI:
     def __init__(self) -> None:
         self.issues: dict[str, dict[str, str]] = {}
         self.create_calls = 0
+        self.inspect_calls = 0
 
-    def create_issue(self, arguments: dict[str, str], key: str | None) -> dict[str, str]:
-        if key is None:
-            raise ValueError("the API requires an idempotency key")
+    def create_issue(self, arguments: dict[str, Any], key: str) -> dict[str, str]:
         self.create_calls += 1
-        issue = {"id": "issue-1", "title": arguments["title"]}
-        self.issues[key] = issue
-        raise UnknownOutcome("connection timed out after the server committed the issue")
+        self.issues[key] = {"id": "issue-1", "title": arguments["title"]}
+        raise UnknownOutcome("response lost after the server committed the issue")
 
-    def find_issue(self, arguments: dict[str, str], key: str | None) -> dict[str, str] | None:
-        return self.issues.get(key or "")
+    def find_issue(self, arguments: dict[str, Any], key: str) -> dict[str, str] | None:
+        self.inspect_calls += 1
+        return self.issues.get(key)
 
 
 def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
         database = Path(directory) / "demo.db"
         api = FakeIssueAPI()
-        runtime = Runtime(database)
-        runtime.register(
-            Tool(
-                name="create_issue",
-                execute=api.create_issue,
-                inspect=api.find_issue,
+        with Runtime(database) as runtime:
+            runtime.register(
+                Tool(
+                    name="create_issue",
+                    execute=api.create_issue,
+                    inspect=api.find_issue,
+                )
             )
-        )
+            graph = build_recovery_graph(runtime, "create_issue")
+            result = graph.invoke(
+                {
+                    "title": "Login is broken",
+                    "body": "Customer report",
+                    "idempotency_key": "customer-report-123",
+                }
+            )
 
-        initial = runtime.execute(
-            "create_issue",
-            {"title": "Login is broken"},
-            idempotency_key="customer-report-123",
-        )
-        recovered = runtime.recover(initial.action_id)
-
-        print(f"initial status:  {initial.status}")
-        print(f"recovered status: {recovered.status}")
-        print(f"issue:            {recovered.result}")
+        print(f"final status:     {result['action_status']}")
+        print(f"verified result:  {result['action_result']}")
         print(f"create calls:     {api.create_calls}")
-        runtime.close()
+        print(f"inspect calls:    {api.inspect_calls}")
 
 
 if __name__ == "__main__":
