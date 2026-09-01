@@ -17,12 +17,15 @@ class FakeIssueService:
     def __init__(self) -> None:
         self.issues: dict[str, dict[str, Any]] = {}
         self.create_calls = 0
+        self.fail_before_create = False
         self.fail_after_create = False
         self.inspect_error = False
 
     def create(self, arguments: dict[str, Any], idempotency_key: str | None) -> dict[str, Any]:
         self.create_calls += 1
         assert idempotency_key is not None
+        if self.fail_before_create:
+            raise RuntimeError("request rejected before commit")
         issue = {
             "id": f"issue-{len(self.issues) + 1}",
             "title": arguments["title"],
@@ -85,6 +88,25 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(first.status, "success")
         self.assertEqual(second.action_id, first.action_id)
+        self.assertEqual(service.create_calls, 1)
+
+    def test_failed_action_cannot_be_reexecuted_with_same_key(self) -> None:
+        service = FakeIssueService()
+        service.fail_before_create = True
+        runtime = self.runtime(service)
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        self.assertEqual(first.status, "failed")
+        service.issues.clear()
+        with self.assertRaisesRegex(ValueError, "new idempotency key"):
+            runtime.execute(
+                "create_issue",
+                {"title": "Login is broken"},
+                idempotency_key="customer-123",
+            )
         self.assertEqual(service.create_calls, 1)
 
     def test_same_idempotency_key_with_different_arguments_is_rejected(self) -> None:

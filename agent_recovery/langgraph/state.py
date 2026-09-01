@@ -22,4 +22,4 @@ class RecoveryState(TypedDict, total=False):
     ]
     action_result: Any
     error: str
-    route: Literal["success", "verify", "retry", "human_review", "failed"]
+    route: Literal["success", "verify", "retry", "await_retry", "human_review", "failed"]

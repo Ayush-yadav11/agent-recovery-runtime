@@ -20,7 +20,7 @@ def route_after_execute(state: RecoveryState) -> str:
     if status == "unknown":
         return "verify"
     if status == "verified_absent":
-        return "retry"
+        return "await_retry"
     if status == "failed":
         return "failed"
     return "human_review"
@@ -31,7 +31,7 @@ def route_after_verify(state: RecoveryState) -> str:
     if status == "success":
         return "success"
     if status == "verified_absent":
-        return "retry"
+        return "await_retry"
     return "human_review"
 
 
@@ -79,6 +79,9 @@ def build_recovery_graph(
     def human_review(state: RecoveryState) -> dict[str, Any]:
         return {"route": "human_review"}
 
+    def await_retry(state: RecoveryState) -> dict[str, Any]:
+        return {"route": "await_retry"}
+
     graph = StateGraph(RecoveryState)
     graph.add_node("execute_action", execute_action)
     graph.add_node("inspect_action", inspect_action)
@@ -86,6 +89,7 @@ def build_recovery_graph(
     graph.add_node("success", success)
     graph.add_node("failed", failed)
     graph.add_node("human_review", human_review)
+    graph.add_node("await_retry", await_retry)
 
     graph.add_edge(START, "execute_action")
     graph.add_conditional_edges(
@@ -94,7 +98,7 @@ def build_recovery_graph(
         {
             "success": "success",
             "verify": "inspect_action",
-            "retry": "retry_action",
+            "await_retry": "await_retry",
             "failed": "failed",
             "human_review": "human_review",
         },
@@ -104,7 +108,7 @@ def build_recovery_graph(
         route_after_verify,
         {
             "success": "success",
-            "retry": "retry_action",
+            "await_retry": "await_retry",
             "human_review": "human_review",
         },
     )
@@ -114,13 +118,13 @@ def build_recovery_graph(
         {
             "success": "success",
             "verify": "inspect_action",
-            "retry": "retry_action",
+            "await_retry": "await_retry",
             "failed": "failed",
             "human_review": "human_review",
         },
     )
 
-    for terminal in ("success", "failed", "human_review"):
+    for terminal in ("success", "failed", "human_review", "await_retry"):
         graph.add_edge(terminal, END)
 
     if checkpointer is not None:

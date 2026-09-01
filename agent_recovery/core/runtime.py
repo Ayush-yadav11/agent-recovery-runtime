@@ -42,6 +42,8 @@ class Runtime:
         if existing is not None:
             if existing.arguments_hash != arguments_hash:
                 raise ValueError("idempotency key reused with different arguments")
+            if existing.status == "failed":
+                raise ValueError("action failed; use a new idempotency key")
             if existing.status == "verified_absent":
                 raise ValueError("action is verified_absent; use retry")
             if existing.status in {"running", "success", "unknown"}:

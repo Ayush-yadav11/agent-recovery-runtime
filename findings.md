@@ -33,8 +33,10 @@ Use GitHub as the first real adapter, but keep all tests offline with an injecta
 ## Safety decisions
 
 - `unknown` must never trigger automatic retry.
+- `verified_absent` routes to an explicit `await_retry` gate; the graph never calls retry on its own.
 - Inspector errors leave the action `unknown` and should route to human review.
 - Only `verified_absent` permits explicit retry.
+- Normal `failed` actions require a new idempotency key before another attempt.
 - `Runtime.execute` rejects normal execution after `verified_absent`; callers must use `Runtime.retry`.
 - Only the latest `verified_absent` action for a key can be retried.
 - Tests must never use live GitHub credentials or perform live writes.

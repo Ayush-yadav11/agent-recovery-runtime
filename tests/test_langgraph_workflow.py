@@ -28,10 +28,10 @@ class RoutingTests(unittest.TestCase):
             "verify",
         )
 
-    def test_execute_routes_verified_absent_to_retry(self) -> None:
+    def test_execute_routes_verified_absent_to_explicit_retry_gate(self) -> None:
         self.assertEqual(
             route_after_execute(RecoveryState(action_status="verified_absent")),
-            "retry",
+            "await_retry",
         )
 
     def test_execute_routes_failed_to_failed(self) -> None:
@@ -49,10 +49,10 @@ class RoutingTests(unittest.TestCase):
             "success",
         )
 
-    def test_verify_routes_verified_absent_to_retry(self) -> None:
+    def test_verify_routes_verified_absent_to_explicit_retry_gate(self) -> None:
         self.assertEqual(
             route_after_verify(RecoveryState(action_status="verified_absent")),
-            "retry",
+            "await_retry",
         )
 
     def test_verify_routes_unknown_to_human_review(self) -> None:
@@ -120,10 +120,13 @@ class GraphExecutionTests(unittest.TestCase):
                     "idempotency_key": "customer-123",
                 }
             )
+            self.assertEqual(result["route"], "await_retry")
+            self.assertEqual(result["action_status"], "verified_absent")
+            retried = runtime.retry(result["action_id"])
             runtime.close()
         client.close()
 
-        self.assertEqual(result["action_status"], "success")
+        self.assertEqual(retried.status, "success")
         self.assertEqual(post_calls, 2)
         self.assertEqual(len(requests), 3)
 
@@ -283,8 +286,11 @@ class GraphExecutionTests(unittest.TestCase):
                     "idempotency_key": "customer-456",
                 }
             )
+            self.assertEqual(result["route"], "await_retry")
+            self.assertEqual(result["action_status"], "verified_absent")
+            retried = runtime.retry(result["action_id"])
             runtime.close()
 
-        self.assertEqual(result["route"], "success")
-        self.assertEqual(result["action_status"], "success")
+        self.assertEqual(retried.status, "success")
+        self.assertEqual(retried.attempt, 2)
         self.assertEqual(calls, 2)

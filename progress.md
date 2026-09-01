@@ -20,10 +20,11 @@
 - Added the eight-case acceptance matrix; it passes independently.
 - Added the README command contract, runbook, offline demo, and executable check script.
 - Added environment-backed GitHub credential loading and final review checks.
+- Review found and fixed automatic graph retry after `verified_absent` and same-key re-execution after normal `failed`.
 
 ## Current phase
 
-Phase 6 complete. The implementation is verified at commit `e50186e` plus final type and planning artifacts. The full check passes 46 tests; the offline demo reports one create and one inspect call; secret and private-API scans are clean.
+Phase 6 complete. The implementation is verified at commit `e50186e` plus final review fixes. The full check passes 47 tests; the offline demo reports one create and one inspect call; secret and private-API scans are clean.
 
 ## Next action
 
