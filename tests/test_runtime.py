@@ -84,6 +84,22 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(second.action_id, first.action_id)
         self.assertEqual(service.create_calls, 1)
 
+    def test_same_idempotency_key_with_different_arguments_is_rejected(self) -> None:
+        service = FakeIssueService()
+        runtime = self.runtime(service)
+        runtime.execute(
+            "create_issue",
+            {"title": "Original"},
+            idempotency_key="customer-123",
+        )
+
+        with self.assertRaisesRegex(ValueError, "different arguments"):
+            runtime.execute(
+                "create_issue",
+                {"title": "Changed"},
+                idempotency_key="customer-123",
+            )
+
     def test_unknown_outcome_is_verified_without_repeating_side_effect(self) -> None:
         service = FakeIssueService()
         service.fail_after_create = True
