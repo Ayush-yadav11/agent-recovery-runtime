@@ -81,7 +81,7 @@ class ActionStore:
         self,
         action_id: str,
         *,
-        status: str,
+        status: ActionStatus,
         result: Any = None,
         error: str | None = None,
     ) -> None:
