@@ -39,6 +39,9 @@ def build_recovery_graph(
     runtime: Runtime,
     tool_name: str,
     arguments_builder: ArgumentBuilder | None = None,
+    *,
+    checkpointer: Any = None,
+    interrupt_before: list[str] | None = None,
 ):
     """Build a compiled graph around one registered Runtime tool."""
 
@@ -120,7 +123,12 @@ def build_recovery_graph(
     for terminal in ("success", "failed", "human_review"):
         graph.add_edge(terminal, END)
 
-    return graph.compile()
+    if checkpointer is not None:
+        checkpointer.setup()
+    return graph.compile(
+        checkpointer=checkpointer,
+        interrupt_before=interrupt_before,
+    )
 
 
 def _result_state(result: Any) -> dict[str, Any]:

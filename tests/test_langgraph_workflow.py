@@ -2,6 +2,8 @@ import unittest
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from langgraph.checkpoint.sqlite import SqliteSaver
+
 from agent_recovery import Runtime, Tool, UnknownOutcome
 from agent_recovery.langgraph.state import RecoveryState
 from agent_recovery.langgraph.workflow import (
@@ -124,6 +126,71 @@ class GraphExecutionTests(unittest.TestCase):
 
         self.assertEqual(result["route"], "success")
         self.assertEqual(result["action_status"], "success")
+        self.assertEqual(calls, 1)
+
+    def test_graph_resumes_after_unknown_from_persistent_checkpoint(self) -> None:
+        calls = 0
+        issue = {"id": "issue-1", "title": "Login is broken"}
+
+        def create_issue(arguments: dict[str, Any], key: str | None) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            raise UnknownOutcome("response lost after commit")
+
+        def inspect_issue(arguments: dict[str, Any], key: str | None) -> dict[str, Any]:
+            return issue
+
+        with TemporaryDirectory() as directory:
+            actions_database = f"{directory}/actions.db"
+            checkpoints_database = f"{directory}/checkpoints.db"
+            config = {"configurable": {"thread_id": "customer-123"}}
+            runtime = Runtime(actions_database)
+            runtime.register(
+                Tool(
+                    name="create_issue",
+                    execute=create_issue,
+                    inspect=inspect_issue,
+                )
+            )
+
+            with SqliteSaver.from_conn_string(checkpoints_database) as checkpointer:
+                interrupted_graph = build_recovery_graph(
+                    runtime,
+                    "create_issue",
+                    checkpointer=checkpointer,
+                    interrupt_before=["inspect_action"],
+                )
+                interrupted = interrupted_graph.invoke(
+                    {
+                        "title": issue["title"],
+                        "body": "Customer report",
+                        "idempotency_key": "customer-123",
+                    },
+                    config,
+                )
+
+                self.assertEqual(interrupted["action_status"], "unknown")
+                runtime.close()
+
+            restarted_runtime = Runtime(actions_database)
+            restarted_runtime.register(
+                Tool(
+                    name="create_issue",
+                    execute=create_issue,
+                    inspect=inspect_issue,
+                )
+            )
+            with SqliteSaver.from_conn_string(checkpoints_database) as checkpointer:
+                restarted_graph = build_recovery_graph(
+                    restarted_runtime,
+                    "create_issue",
+                    checkpointer=checkpointer,
+                )
+                resumed = restarted_graph.invoke(None, config)
+            restarted_runtime.close()
+
+        self.assertEqual(resumed["route"], "success")
+        self.assertEqual(resumed["action_status"], "success")
         self.assertEqual(calls, 1)
 
     def test_graph_retries_only_after_verified_absence(self) -> None:
