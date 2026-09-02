@@ -13,8 +13,18 @@ ActionStatus = Literal[
     "unknown",
     "verified_absent",
 ]
+ApprovalStatus = Literal["pending", "approved", "rejected", "consumed"]
 ExecuteFn = Callable[[dict[str, Any], str | None], Any]
 InspectFn = Callable[[dict[str, Any], str | None], Any | None]
+
+
+@dataclass(frozen=True)
+class RetryApproval:
+    approval_id: str
+    action_id: str
+    status: ApprovalStatus
+    reviewer: str | None = None
+    reason: str | None = None
 
 
 class UnknownOutcome(RuntimeError):

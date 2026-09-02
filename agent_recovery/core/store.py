@@ -7,9 +7,23 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
-from typing import Any
+from typing import Any, Literal
 
-from agent_recovery.core.actions import ActionStatus
+from agent_recovery.core.actions import ActionStatus, ApprovalStatus
+
+
+_CREATE_APPROVALS = """
+CREATE TABLE IF NOT EXISTS retry_approvals (
+    approval_id TEXT PRIMARY KEY,
+    action_id TEXT NOT NULL UNIQUE REFERENCES actions(action_id),
+    status TEXT NOT NULL,
+    reviewer TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    decided_at TEXT,
+    consumed_at TEXT
+)
+"""
 
 
 _CREATE_ACTIONS = """
@@ -41,6 +55,15 @@ class StoredAction:
     status: ActionStatus
     result: Any = None
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class StoredApproval:
+    approval_id: str
+    action_id: str
+    status: ApprovalStatus
+    reviewer: str | None = None
+    reason: str | None = None
 
 
 class ActionStore:
@@ -95,6 +118,103 @@ class ActionStore:
             (action_id,),
         ).fetchone()
         return _to_action(row) if row is not None else None
+
+    def create_approval(self, approval_id: str, action_id: str) -> StoredApproval:
+        self._connection.execute(
+            """
+            INSERT INTO retry_approvals (approval_id, action_id, status)
+            VALUES (?, ?, 'pending')
+            """,
+            (approval_id, action_id),
+        )
+        self._connection.commit()
+        approval = self.get_approval(action_id)
+        assert approval is not None
+        return approval
+
+    def get_approval(self, action_id: str) -> StoredApproval | None:
+        row = self._connection.execute(
+            "SELECT * FROM retry_approvals WHERE action_id = ?",
+            (action_id,),
+        ).fetchone()
+        return _to_approval(row) if row is not None else None
+
+    def decide_approval(
+        self,
+        action_id: str,
+        *,
+        status: Literal["approved", "rejected"],
+        reviewer: str,
+        reason: str,
+    ) -> StoredApproval:
+        cursor = self._connection.execute(
+            """
+            UPDATE retry_approvals
+            SET status = ?, reviewer = ?, reason = ?, decided_at = CURRENT_TIMESTAMP
+            WHERE action_id = ? AND status = 'pending'
+            """,
+            (status, reviewer, reason, action_id),
+        )
+        self._connection.commit()
+        if cursor.rowcount != 1:
+            raise ValueError("retry approval is not pending")
+        approval = self.get_approval(action_id)
+        assert approval is not None
+        return approval
+
+    def start_approved_retry(
+        self,
+        *,
+        approval_action_id: str,
+        action_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        arguments_hash: str,
+        idempotency_key: str,
+        attempt: int,
+    ) -> bool:
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            approval = self._connection.execute(
+                """
+                SELECT approval_id FROM retry_approvals
+                WHERE action_id = ? AND status = 'approved'
+                """,
+                (approval_action_id,),
+            ).fetchone()
+            if approval is None:
+                self._connection.rollback()
+                return False
+            self._connection.execute(
+                """
+                UPDATE retry_approvals
+                SET status = 'consumed', consumed_at = CURRENT_TIMESTAMP
+                WHERE action_id = ? AND status = 'approved'
+                """,
+                (approval_action_id,),
+            )
+            self._connection.execute(
+                """
+                INSERT INTO actions
+                    (action_id, tool_name, arguments_json, arguments_hash,
+                     idempotency_key, attempt, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'running')
+                """,
+                (
+                    action_id,
+                    tool_name,
+                    _encode(arguments),
+                    arguments_hash,
+                    idempotency_key,
+                    attempt,
+                ),
+            )
+        except Exception:
+            self._connection.rollback()
+            raise
+        else:
+            self._connection.commit()
+            return True
 
     def update(
         self,
@@ -155,6 +275,7 @@ class ActionStore:
             );
             """
         )
+        self._connection.executescript(_CREATE_APPROVALS)
         self._connection.commit()
 
     def _migrate_legacy_actions(self) -> None:
@@ -192,6 +313,16 @@ class ActionStore:
                 ),
             )
         self._connection.execute("DROP TABLE actions_legacy")
+
+
+def _to_approval(row: sqlite3.Row) -> StoredApproval:
+    return StoredApproval(
+        approval_id=row["approval_id"],
+        action_id=row["action_id"],
+        status=row["status"],
+        reviewer=row["reviewer"],
+        reason=row["reason"],
+    )
 
 
 def _to_action(row: sqlite3.Row) -> StoredAction:

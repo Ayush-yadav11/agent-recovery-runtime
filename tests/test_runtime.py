@@ -397,15 +397,43 @@ class RuntimeTests(unittest.TestCase):
         )
         service.issues.clear()
         absent = runtime.recover(first.action_id)
+        self.assertEqual(absent.status, "verified_absent")
+
+        with self.assertRaises(KeyError):
+            runtime.get_retry_approval(absent.action_id)
+        with self.assertRaisesRegex(ValueError, "retry requires an approved approval"):
+            runtime.retry(absent.action_id)
 
         approval = runtime.request_retry_approval(absent.action_id)
-        self.assertEqual(approval.status, "pending")
-        with self.assertRaisesRegex(ValueError, "approved"):
-            runtime.retry(absent.action_id)
         pending_again = runtime.request_retry_approval(absent.action_id)
 
+        self.assertEqual(approval.status, "pending")
         self.assertEqual(pending_again.approval_id, approval.approval_id)
         self.assertEqual(service.create_calls, 1)
+
+    def test_pending_approval_does_not_allow_retry(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        runtime = self.runtime(service)
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        service.issues.clear()
+        absent = runtime.recover(first.action_id)
+        approval = runtime.request_retry_approval(absent.action_id)
+        self.assertEqual(approval.status, "pending")
+        service.fail_after_create = False
+
+        with self.assertRaisesRegex(ValueError, "retry requires an approved approval"):
+            runtime.retry(absent.action_id)
+
+        still_pending = runtime.get_retry_approval(absent.action_id)
+        self.assertEqual(still_pending.status, "pending")
+        self.assertIsNone(still_pending.reviewer)
+        self.assertEqual(service.create_calls, 1)
+        self.assertEqual(service.issues, {})
 
     def test_rejected_retry_cannot_create_a_side_effect(self) -> None:
         service = FakeIssueService()

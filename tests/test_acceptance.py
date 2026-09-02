@@ -98,6 +98,12 @@ class AcceptanceTests(unittest.TestCase):
             runtime = self.make_runtime(Path(directory) / "actions.db", service)
             initial = runtime.execute("create_issue", {"title": "Login"}, idempotency_key="a-1")
             runtime.recover(initial.action_id)
+            runtime.request_retry_approval(initial.action_id)
+            runtime.approve_retry(
+                initial.action_id,
+                reviewer="operator-1",
+                reason="Verified absence before retry",
+            )
             service.mode = "success"
             retried = runtime.retry(initial.action_id)
             runtime.close()
