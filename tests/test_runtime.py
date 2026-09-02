@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Callable
 import sqlite3
 import unittest
 
-from agent_recovery import Runtime, Tool, UnknownOutcome
+from agent_recovery import Runtime, Tool, UnknownOutcome, VerificationOutcome
 from agent_recovery.core.store import ActionStore
 from agent_recovery.core.actions import (
     ActionResult as CoreActionResult,
     Tool as CoreTool,
     UnknownOutcome as CoreUnknownOutcome,
+    VerificationOutcome as CoreVerificationOutcome,
+    VerificationStatus,
 )
 
 
@@ -494,6 +496,266 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "consumed"):
             restarted.retry(absent.action_id)
         restarted.close()
+
+
+class TransientLookupError(RuntimeError):
+    """The inspector could not reach the external system."""
+
+
+class InconclusiveLookupError(RuntimeError):
+    """The inspector read conflicting records."""
+
+
+InspectStub = Callable[[dict[str, Any], str | None], Any]
+ClassifyStub = Callable[[BaseException], Any]
+
+
+class LostResponseService:
+    """A side effect that commits and then loses its response."""
+
+    def __init__(self, inspect: InspectStub, classify: ClassifyStub | None = None) -> None:
+        self.create_calls = 0
+        self.inspect_calls = 0
+        self._inspect = inspect
+        self._classify = classify
+
+    def execute(self, arguments: dict[str, Any], key: str | None) -> dict[str, Any]:
+        self.create_calls += 1
+        raise UnknownOutcome("response lost after the side effect was committed")
+
+    def inspect(self, arguments: dict[str, Any], key: str | None) -> Any:
+        self.inspect_calls += 1
+        return self._inspect(arguments, key)
+
+    def tool(self) -> Tool:
+        return Tool(
+            name="create_issue",
+            execute=self.execute,
+            inspect=self.inspect,
+            classify=self._classify,
+        )
+
+
+class VerificationOutcomeTests(unittest.TestCase):
+    """Inspection must distinguish absence from an unusable external system."""
+
+    def setUp(self) -> None:
+        self._tempdir = TemporaryDirectory()
+        self.addCleanup(self._tempdir.cleanup)
+        self.database = f"{self._tempdir.name}/runs.db"
+
+    def unknown_action(
+        self,
+        inspect: InspectStub,
+        classify: ClassifyStub | None = None,
+    ) -> tuple[Runtime, LostResponseService, Any]:
+        service = LostResponseService(inspect, classify)
+        runtime = Runtime(self.database)
+        self.addCleanup(runtime.close)
+        runtime.register(service.tool())
+        action = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        self.assertEqual(action.status, "unknown")
+        return runtime, service, action
+
+    def event_types(self, action_id: str) -> list[str]:
+        connection = sqlite3.connect(self.database)
+        try:
+            rows = connection.execute(
+                "SELECT event_type FROM events WHERE action_id = ? ORDER BY event_id",
+                (action_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [row[0] for row in rows]
+
+    def assert_retry_is_blocked(self, runtime: Runtime, action_id: str) -> None:
+        with self.assertRaisesRegex(ValueError, "only verified_absent actions can be retried"):
+            runtime.request_retry_approval(action_id)
+        with self.assertRaisesRegex(ValueError, "retry requires an approved approval"):
+            runtime.retry(action_id)
+
+    def test_unavailable_inspection_keeps_action_unknown(self) -> None:
+        runtime, service, action = self.unknown_action(
+            lambda arguments, key: VerificationOutcome.unavailable("issue search returned 503")
+        )
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "unknown")
+        self.assertIn("unavailable", recovered.error or "")
+        self.assertIn("issue search returned 503", recovered.error or "")
+        self.assert_retry_is_blocked(runtime, action.action_id)
+        self.assertEqual(service.create_calls, 1)
+        self.assertEqual(service.inspect_calls, 1)
+        self.assertIn("verification.unavailable", self.event_types(action.action_id))
+
+    def test_ambiguous_inspection_keeps_action_unknown_for_human_review(self) -> None:
+        runtime, service, action = self.unknown_action(
+            lambda arguments, key: VerificationOutcome.ambiguous(
+                "two issues carry the same idempotency marker"
+            )
+        )
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "unknown")
+        self.assertIn("ambiguous", recovered.error or "")
+        self.assertIn("two issues carry the same idempotency marker", recovered.error or "")
+        self.assert_retry_is_blocked(runtime, action.action_id)
+        self.assertEqual(service.create_calls, 1)
+        self.assertIn("verification.ambiguous", self.event_types(action.action_id))
+
+    def test_classify_transient_error_as_unavailable(self) -> None:
+        def inspect(arguments: dict[str, Any], key: str | None) -> Any:
+            raise TransientLookupError("issue search timed out")
+
+        def classify(exc: BaseException) -> VerificationOutcome | None:
+            if isinstance(exc, TransientLookupError):
+                return VerificationOutcome.unavailable(
+                    "the issue index is temporarily unreachable"
+                )
+            return None
+
+        runtime, service, action = self.unknown_action(inspect, classify)
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "unknown")
+        self.assertIn("unavailable", recovered.error or "")
+        self.assertIn("the issue index is temporarily unreachable", recovered.error or "")
+        self.assertIn("TransientLookupError: issue search timed out", recovered.error or "")
+        self.assert_retry_is_blocked(runtime, action.action_id)
+        self.assertEqual(service.create_calls, 1)
+        self.assertIn("verification.unavailable", self.event_types(action.action_id))
+
+    def test_existing_none_result_still_verified_absent(self) -> None:
+        runtime, service, action = self.unknown_action(lambda arguments, key: None)
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "verified_absent")
+        self.assertEqual(
+            recovered.error,
+            "verification did not find the expected side effect",
+        )
+        self.assertEqual(service.create_calls, 1)
+        self.assertIn("verification.verified_absent", self.event_types(action.action_id))
+        approval = runtime.request_retry_approval(action.action_id)
+        self.assertEqual(approval.status, "pending")
+
+    def test_existing_value_result_still_success(self) -> None:
+        issue = {"id": "issue-1", "title": "Login is broken"}
+        runtime, service, action = self.unknown_action(lambda arguments, key: issue)
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "success")
+        self.assertEqual(recovered.result, issue)
+        self.assertIsNone(recovered.error)
+        self.assertEqual(service.create_calls, 1)
+        self.assertIn("verification.found", self.event_types(action.action_id))
+
+    def test_found_outcome_marks_action_success(self) -> None:
+        issue = {"id": "issue-1", "title": "Login is broken"}
+        runtime, service, action = self.unknown_action(
+            lambda arguments, key: VerificationOutcome.found(issue)
+        )
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "success")
+        self.assertEqual(recovered.result, issue)
+        self.assertEqual(service.create_calls, 1)
+
+    def test_unclassified_inspection_error_keeps_legacy_unknown_behavior(self) -> None:
+        def inspect(arguments: dict[str, Any], key: str | None) -> Any:
+            raise InconclusiveLookupError("issue lookup unavailable")
+
+        def classify(exc: BaseException) -> VerificationOutcome | None:
+            return None
+
+        runtime, service, action = self.unknown_action(inspect, classify)
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "unknown")
+        self.assertEqual(
+            recovered.error,
+            "verification failed: InconclusiveLookupError: issue lookup unavailable",
+        )
+        self.assert_retry_is_blocked(runtime, action.action_id)
+        self.assertIn("verification.error", self.event_types(action.action_id))
+
+    def test_classifier_cannot_promote_an_exception_to_verified_absent(self) -> None:
+        def inspect(arguments: dict[str, Any], key: str | None) -> Any:
+            raise TransientLookupError("issue search timed out")
+
+        runtime, service, action = self.unknown_action(
+            inspect,
+            lambda exc: VerificationOutcome.verified_absent("assume nothing was created"),
+        )
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "unknown")
+        self.assertIn("verification failed", recovered.error or "")
+        self.assert_retry_is_blocked(runtime, action.action_id)
+        self.assertIn("verification.error", self.event_types(action.action_id))
+
+    def test_broken_classifier_keeps_action_unknown(self) -> None:
+        def inspect(arguments: dict[str, Any], key: str | None) -> Any:
+            raise TransientLookupError("issue search timed out")
+
+        def classify(exc: BaseException) -> VerificationOutcome | None:
+            raise ValueError("classifier is misconfigured")
+
+        runtime, service, action = self.unknown_action(inspect, classify)
+
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(recovered.status, "unknown")
+        self.assertIn("verification failed", recovered.error or "")
+        self.assert_retry_is_blocked(runtime, action.action_id)
+
+    def test_unavailable_inspection_can_be_verified_after_the_system_recovers(self) -> None:
+        issue = {"id": "issue-1", "title": "Login is broken"}
+        outcomes = [
+            VerificationOutcome.unavailable("issue search returned 503"),
+            VerificationOutcome.found(issue),
+        ]
+        runtime, service, action = self.unknown_action(
+            lambda arguments, key: outcomes.pop(0)
+        )
+
+        deferred = runtime.recover(action.action_id)
+        recovered = runtime.recover(action.action_id)
+
+        self.assertEqual(deferred.status, "unknown")
+        self.assertEqual(recovered.status, "success")
+        self.assertEqual(recovered.result, issue)
+        self.assertEqual(service.create_calls, 1)
+        self.assertEqual(service.inspect_calls, 2)
+
+    def test_outcome_contract_rejects_unusable_values(self) -> None:
+        self.assertIs(VerificationOutcome, CoreVerificationOutcome)
+        self.assertEqual(
+            VerificationOutcome.found({"id": 1}).status,
+            VerificationStatus.FOUND,
+        )
+        self.assertEqual(
+            VerificationOutcome.verified_absent().status,
+            VerificationStatus.VERIFIED_ABSENT,
+        )
+        with self.assertRaisesRegex(ValueError, "found outcome requires"):
+            VerificationOutcome.found(None)
+        with self.assertRaisesRegex(ValueError, "requires a reason"):
+            VerificationOutcome.unavailable("")
+        with self.assertRaisesRegex(ValueError, "requires a reason"):
+            VerificationOutcome.ambiguous("   ")
 
 
 if __name__ == "__main__":

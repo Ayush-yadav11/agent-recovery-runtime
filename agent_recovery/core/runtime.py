@@ -13,8 +13,13 @@ from agent_recovery.core.actions import (
     RetryApproval,
     Tool,
     UnknownOutcome,
+    VerificationOutcome,
+    VerificationStatus,
 )
 from agent_recovery.core.store import ActionStore, StoredAction, StoredApproval
+
+_ABSENT_REASON = "verification did not find the expected side effect"
+_DEFERRED = frozenset({VerificationStatus.UNAVAILABLE, VerificationStatus.AMBIGUOUS})
 
 
 class Runtime:
@@ -195,22 +200,81 @@ class Runtime:
         try:
             value = tool.inspect(row.arguments, row.idempotency_key)
         except Exception as exc:  # noqa: BLE001 - inspection must not crash the runtime
+            detail = f"{type(exc).__name__}: {exc}"
+            outcome = self._classify_inspection_error(action_id, tool, exc)
+            if outcome is None:
+                self._record_inspection_error(action_id, detail)
+            else:
+                self._record_verification(action_id, outcome.with_detail(detail))
+        else:
+            self._record_verification(action_id, _outcome_from_value(value))
+
+        return self._result(action_id)
+
+    def _classify_inspection_error(
+        self,
+        action_id: str,
+        tool: Tool,
+        exc: BaseException,
+    ) -> VerificationOutcome | None:
+        """Ask the tool whether an inspection failure defers the verdict.
+
+        Returns the deferring outcome, or `None` to keep the conservative
+        default: an unclassified failure asserts nothing about the side effect.
+        A tool without a classifier, a classifier that declines, a broken
+        classifier and a classifier that oversteps all take that default.
+        """
+        if tool.classify is None:
+            return None
+
+        try:
+            outcome = tool.classify(exc)
+        except Exception as inner:  # noqa: BLE001 - a broken classifier cannot crash
+            self._store.add_event(
+                action_id,
+                "verification.classifier_failed",
+                {"error": f"{type(inner).__name__}: {inner}"},
+            )
+            return None
+
+        if outcome is None:
+            return None
+        if outcome.status not in _DEFERRED:
+            # An exception is not evidence: it can neither find the side effect
+            # nor prove it absent, so a classifier may only defer the verdict.
+            self._store.add_event(
+                action_id,
+                "verification.classifier_rejected",
+                {"status": outcome.status.value},
+            )
+            return None
+        return outcome
+
+    def _record_verification(self, action_id: str, outcome: VerificationOutcome) -> None:
+        """Apply one inspection outcome to the action and record the event."""
+        if outcome.status is VerificationStatus.FOUND:
+            self._finish(action_id, "success", result=outcome.value)
+            payload: dict[str, Any] = {"result": outcome.value}
+        elif outcome.status is VerificationStatus.VERIFIED_ABSENT:
+            reason = outcome.reason or _ABSENT_REASON
+            self._finish(action_id, "verified_absent", error=reason)
+            payload = {"reason": reason}
+        else:
+            # `unavailable` and `ambiguous` answer nothing about the side
+            # effect. The action stays `unknown`, so no retry is unlocked and
+            # the operator decides when to inspect again.
             self._finish(
                 action_id,
                 "unknown",
-                error=f"verification failed: {type(exc).__name__}: {exc}",
+                error=f"verification {outcome.status.value}: {outcome.reason}",
             )
-        else:
-            if value is None:
-                self._finish(
-                    action_id,
-                    "verified_absent",
-                    error="verification did not find the expected side effect",
-                )
-            else:
-                self._finish(action_id, "success", result=value)
+            payload = {"reason": outcome.reason}
+        self._store.add_event(action_id, f"verification.{outcome.status.value}", payload)
 
-        return self._result(action_id)
+    def _record_inspection_error(self, action_id: str, detail: str) -> None:
+        """Record an unclassified inspection failure without a verdict."""
+        self._finish(action_id, "unknown", error=f"verification failed: {detail}")
+        self._store.add_event(action_id, "verification.error", {"error": detail})
 
     def close(self) -> None:
         self._store.close()
@@ -264,6 +328,19 @@ class Runtime:
 
     def _result(self, action_id: str) -> ActionResult:
         return _to_result(self._get_action(action_id))
+
+
+def _outcome_from_value(value: Any) -> VerificationOutcome:
+    """Normalise an inspector's return value onto an explicit outcome.
+
+    Tools may return a `VerificationOutcome` directly, or keep the legacy
+    contract where the found object means found and `None` means absent.
+    """
+    if isinstance(value, VerificationOutcome):
+        return value
+    if value is None:
+        return VerificationOutcome.verified_absent(_ABSENT_REASON)
+    return VerificationOutcome.found(value)
 
 
 def _arguments_hash(arguments: dict[str, Any]) -> str:

@@ -9,6 +9,8 @@ from agent_recovery.core.actions import (
     RetryApproval,
     Tool,
     UnknownOutcome,
+    VerificationOutcome,
+    VerificationStatus,
 )
 from agent_recovery.core.runtime import Runtime
 
@@ -22,4 +24,6 @@ __all__ = [
     "Runtime",
     "Tool",
     "UnknownOutcome",
+    "VerificationOutcome",
+    "VerificationStatus",
 ]
