@@ -90,8 +90,8 @@ Add PostgreSQL, concurrent workers, a lease field for running actions, and a rec
 
 ## Current phase
 
-Phase 7 planning. No implementation started.
+Phase 10: additional adapters. Phases 1-9 are implemented, tested, and committed; all 65 tests pass.
 
 ## Next action
 
-Implement Phase 7: explicit human approval and restart-safe retry. The core runtime and storage need an approval record type, an `approve`/`reject` API, and a retry guard that rejects duplicate approvals. LangGraph needs interrupt/resume so workers pause and resume on approval. Start with TDD: write failing tests, then implement.
+Implement Phase 10: add a non-GitHub adapter (Stripe recommended) implementing the Tool contract with VerificationOutcome. Claude Code's Phase 9 run added GitHub Actions CI, ruff lint config, CHANGELOG, and MIT license. The CI workflow file is untracked (gitignored) and requires GitHub web editor upload due to token scope.

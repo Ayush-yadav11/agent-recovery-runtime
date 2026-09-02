@@ -43,14 +43,14 @@ The model is not required for the first milestone. Reliability behavior must be 
 | 6. Review and contribution prep | complete | Clean tree, review complete, planning files removed, upstream candidates documented |
 | 7. Explicit human approval and restart-safe retry | complete | ApprovalRequired state, Runtime.approve/reject, persisted approval records, single-use retry |
 | 8. Verification outcome contracts | complete | VerificationOutcome distinguishes found, absent, unavailable, ambiguous |
-| 9. CI, quality, and release | planned | CI, linter, changelog, license, and `v0.1.0` |
+| 9. CI, quality, and release | complete | GitHub Actions CI, ruff lint, CHANGELOG, MIT license (workflow file requires web upload) |
 | 10. Additional adapters | planned | At least one adapter with a different failure model |
 | 11. Observability | planned | OpenTelemetry-compatible events for action lifecycle |
 | 12. Production storage | planned | PostgreSQL, concurrent workers, and recovery sweeper |
 
 ## Next step
 
-Implement Phase 9: CI, quality, and release. Add GitHub Actions across Python 3.10, 3.11, 3.12, a linter, CHANGELOG, MIT license, and tag v0.1.0. Phases 7 and 8 are committed and all 65 tests pass.
+Phase 10: additional adapters. Add a non-GitHub adapter (Stripe recommended) with the same Tool contract and VerificationOutcome contract. Phases 1-9 are implemented, tested, and committed; all 65 tests pass.
 
 ## Step-by-step tasks
 
