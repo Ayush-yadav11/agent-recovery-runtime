@@ -16,6 +16,8 @@ from agent_recovery.core.actions import (
     VerificationOutcome,
     VerificationStatus,
 )
+from agent_recovery.core.events import EventLogEntry, EventReader
+from agent_recovery.core.metrics import MetricsCollector
 from agent_recovery.core.store import ActionStore, StoredAction, StoredApproval
 
 _ABSENT_REASON = "verification did not find the expected side effect"
@@ -26,6 +28,7 @@ class Runtime:
     """Execute tools with durable state and safe recovery semantics."""
 
     def __init__(self, database: str | Path = "agent_runs.db") -> None:
+        self._database = str(database)
         self._store = ActionStore(database)
         self._tools: dict[str, Tool] = {}
 
@@ -275,6 +278,15 @@ class Runtime:
         """Record an unclassified inspection failure without a verdict."""
         self._finish(action_id, "unknown", error=f"verification failed: {detail}")
         self._store.add_event(action_id, "verification.error", {"error": detail})
+
+    def events(self, action_id: str) -> list[EventLogEntry]:
+        """Return the lifecycle event log for one action, oldest first."""
+        with EventReader(self._database) as reader:
+            return reader.events(action_id)
+
+    def metrics(self) -> MetricsCollector:
+        """Return a collector bound to this runtime's database file."""
+        return MetricsCollector(self._database)
 
     def close(self) -> None:
         self._store.close()

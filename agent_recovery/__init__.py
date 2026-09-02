@@ -12,14 +12,19 @@ from agent_recovery.core.actions import (
     VerificationOutcome,
     VerificationStatus,
 )
+from agent_recovery.core.events import EventLogEntry, EventReader
+from agent_recovery.core.metrics import MetricsCollector
 from agent_recovery.core.runtime import Runtime
 
 __all__ = [
     "ActionResult",
     "ActionStatus",
     "ApprovalStatus",
+    "EventLogEntry",
+    "EventReader",
     "ExecuteFn",
     "InspectFn",
+    "MetricsCollector",
     "RetryApproval",
     "Runtime",
     "Tool",
