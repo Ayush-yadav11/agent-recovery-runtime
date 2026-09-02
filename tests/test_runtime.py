@@ -192,6 +192,12 @@ class RuntimeTests(unittest.TestCase):
         )
         service.issues.clear()
         absent = runtime.recover(first.action_id)
+        runtime.request_retry_approval(absent.action_id)
+        runtime.approve_retry(
+            absent.action_id,
+            reviewer="operator-1",
+            reason="Verified absence before retry",
+        )
         service.fail_after_create = False
 
         retried = runtime.retry(first.action_id)
@@ -231,10 +237,16 @@ class RuntimeTests(unittest.TestCase):
         )
         service.issues.clear()
         runtime.recover(first.action_id)
+        runtime.request_retry_approval(first.action_id)
+        runtime.approve_retry(
+            first.action_id,
+            reviewer="operator-1",
+            reason="Verified absence before retry",
+        )
         service.fail_after_create = False
         retried = runtime.retry(first.action_id)
 
-        with self.assertRaisesRegex(ValueError, "latest"):
+        with self.assertRaisesRegex(ValueError, "consumed"):
             runtime.retry(first.action_id)
         self.assertEqual(retried.attempt, 2)
 
@@ -248,7 +260,7 @@ class RuntimeTests(unittest.TestCase):
             idempotency_key="customer-123",
         )
 
-        with self.assertRaisesRegex(ValueError, "only verified_absent actions can be retried"):
+        with self.assertRaisesRegex(ValueError, "retry requires an approved approval"):
             runtime.retry(first.action_id)
 
     def test_inspector_failure_keeps_action_unknown(self) -> None:
@@ -373,6 +385,87 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(recovered.status, "success")
         self.assertEqual(service.create_calls, 0)
+
+    def test_verified_absence_requires_approval_before_retry(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        runtime = self.runtime(service)
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        service.issues.clear()
+        absent = runtime.recover(first.action_id)
+
+        approval = runtime.request_retry_approval(absent.action_id)
+        self.assertEqual(approval.status, "pending")
+        with self.assertRaisesRegex(ValueError, "approved"):
+            runtime.retry(absent.action_id)
+        pending_again = runtime.request_retry_approval(absent.action_id)
+
+        self.assertEqual(pending_again.approval_id, approval.approval_id)
+        self.assertEqual(service.create_calls, 1)
+
+    def test_rejected_retry_cannot_create_a_side_effect(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        runtime = self.runtime(service)
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        service.issues.clear()
+        absent = runtime.recover(first.action_id)
+        runtime.request_retry_approval(absent.action_id)
+
+        rejected = runtime.reject_retry(
+            absent.action_id,
+            reviewer="operator-1",
+            reason="Wait for the external system to catch up",
+        )
+        self.assertEqual(rejected.status, "rejected")
+        with self.assertRaisesRegex(ValueError, "rejected"):
+            runtime.retry(absent.action_id)
+        self.assertEqual(service.create_calls, 1)
+
+    def test_approved_retry_is_single_use_and_survives_restart(self) -> None:
+        service = FakeIssueService()
+        service.fail_after_create = True
+        self.tempdir = TemporaryDirectory()
+        database = f"{self.tempdir.name}/runs.db"
+        runtime = Runtime(database)
+        runtime.register(ToolFixture(service).tool())
+        first = runtime.execute(
+            "create_issue",
+            {"title": "Login is broken"},
+            idempotency_key="customer-123",
+        )
+        service.issues.clear()
+        absent = runtime.recover(first.action_id)
+        approval = runtime.request_retry_approval(absent.action_id)
+        runtime.close()
+
+        restarted = Runtime(database)
+        restarted.register(ToolFixture(service).tool())
+        stored = restarted.get_retry_approval(absent.action_id)
+        self.assertEqual(stored.approval_id, approval.approval_id)
+        approved = restarted.approve_retry(
+            absent.action_id,
+            reviewer="operator-1",
+            reason="Verified absence in the target repository",
+        )
+        service.fail_after_create = False
+        retried = restarted.retry(absent.action_id)
+
+        self.assertEqual(approved.status, "approved")
+        self.assertEqual(retried.status, "success")
+        self.assertEqual(retried.attempt, 2)
+        self.assertEqual(service.create_calls, 2)
+        with self.assertRaisesRegex(ValueError, "consumed"):
+            restarted.retry(absent.action_id)
+        restarted.close()
 
 
 if __name__ == "__main__":

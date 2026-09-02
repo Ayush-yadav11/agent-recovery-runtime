@@ -7,8 +7,14 @@ from pathlib import Path
 import secrets
 from typing import Any
 
-from agent_recovery.core.actions import ActionResult, ActionStatus, Tool, UnknownOutcome
-from agent_recovery.core.store import ActionStore, StoredAction
+from agent_recovery.core.actions import (
+    ActionResult,
+    ActionStatus,
+    RetryApproval,
+    Tool,
+    UnknownOutcome,
+)
+from agent_recovery.core.store import ActionStore, StoredAction, StoredApproval
 
 
 class Runtime:
@@ -63,26 +69,99 @@ class Runtime:
         self._run_tool(action_id, tool, arguments, idempotency_key)
         return self._result(action_id)
 
+    def request_retry_approval(self, action_id: str) -> RetryApproval:
+        row = self._get_action(action_id)
+        self._validate_latest_absence(row)
+        existing = self._store.get_approval(action_id)
+        if existing is not None:
+            if existing.status == "consumed":
+                raise ValueError("retry approval already consumed")
+            return _to_approval(existing)
+
+        approval = self._store.create_approval(secrets.token_hex(12), action_id)
+        self._store.add_event(
+            action_id,
+            "approval.requested",
+            {"approval_id": approval.approval_id},
+        )
+        return _to_approval(approval)
+
+    def get_retry_approval(self, action_id: str) -> RetryApproval:
+        approval = self._store.get_approval(action_id)
+        if approval is None:
+            raise KeyError(f"no retry approval for action: {action_id}")
+        return _to_approval(approval)
+
+    def approve_retry(self, action_id: str, *, reviewer: str, reason: str) -> RetryApproval:
+        return self._decide_retry(action_id, "approved", reviewer, reason)
+
+    def reject_retry(self, action_id: str, *, reviewer: str, reason: str) -> RetryApproval:
+        return self._decide_retry(action_id, "rejected", reviewer, reason)
+
+    def _decide_retry(
+        self,
+        action_id: str,
+        status: str,
+        reviewer: str,
+        reason: str,
+    ) -> RetryApproval:
+        if not reviewer.strip():
+            raise ValueError("reviewer is required")
+        if not reason.strip():
+            raise ValueError("reason is required")
+        row = self._get_action(action_id)
+        self._validate_latest_absence(row)
+        try:
+            approval = self._store.decide_approval(
+                action_id,
+                status=status,  # type: ignore[arg-type]
+                reviewer=reviewer,
+                reason=reason,
+            )
+        except ValueError:
+            raise ValueError("retry approval is not pending") from None
+        self._store.add_event(
+            action_id,
+            f"approval.{status}",
+            {
+                "approval_id": approval.approval_id,
+                "reviewer": reviewer,
+                "reason": reason,
+            },
+        )
+        return _to_approval(approval)
+
     def retry(self, action_id: str) -> ActionResult:
         row = self._get_action(action_id)
-        latest = self._store.find_latest(row.tool_name, row.idempotency_key)
-        if latest is None or latest.action_id != action_id:
-            raise ValueError("only the latest verified_absent action can be retried")
-        if row.status != "verified_absent":
-            raise ValueError("only verified_absent actions can be retried")
+        approval = self._store.get_approval(action_id)
+        if approval is None or approval.status == "pending":
+            raise ValueError("retry requires an approved approval")
+        if approval.status == "rejected":
+            raise ValueError("retry approval is rejected")
+        if approval.status == "consumed":
+            raise ValueError("retry approval already consumed")
+        self._validate_latest_absence(row)
 
         tool = self._tools.get(row.tool_name)
         if tool is None:
             raise KeyError(f"unknown tool: {row.tool_name}")
 
         new_action_id = secrets.token_hex(12)
-        self._store.create_action(
+        started = self._store.start_approved_retry(
+            approval_action_id=action_id,
             action_id=new_action_id,
             tool_name=row.tool_name,
             arguments=row.arguments,
             arguments_hash=row.arguments_hash,
             idempotency_key=row.idempotency_key,
             attempt=row.attempt + 1,
+        )
+        if not started:
+            raise ValueError("retry approval already consumed")
+        self._store.add_event(
+            action_id,
+            "approval.consumed",
+            {"approval_id": approval.approval_id, "retry_action_id": new_action_id},
         )
         self._store.add_event(
             new_action_id,
@@ -170,6 +249,13 @@ class Runtime:
         payload = {"error": error} if error else {"result": result}
         self._store.add_event(action_id, f"action.{status}", payload)
 
+    def _validate_latest_absence(self, row: StoredAction) -> None:
+        latest = self._store.find_latest(row.tool_name, row.idempotency_key)
+        if latest is None or latest.action_id != row.action_id:
+            raise ValueError("only the latest verified_absent action can be used")
+        if row.status != "verified_absent":
+            raise ValueError("only verified_absent actions can be retried")
+
     def _get_action(self, action_id: str) -> StoredAction:
         row = self._store.get(action_id)
         if row is None:
@@ -185,6 +271,16 @@ def _arguments_hash(arguments: dict[str, Any]) -> str:
 
     canonical = json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _to_approval(row: StoredApproval) -> RetryApproval:
+    return RetryApproval(
+        approval_id=row.approval_id,
+        action_id=row.action_id,
+        status=row.status,
+        reviewer=row.reviewer,
+        reason=row.reason,
+    )
 
 
 def _to_result(row: StoredAction) -> ActionResult:

@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 
 from agent_recovery import Runtime, Tool, UnknownOutcome
 from agent_recovery.integrations.github import GitHubClient
@@ -122,6 +123,12 @@ class GraphExecutionTests(unittest.TestCase):
             )
             self.assertEqual(result["route"], "await_retry")
             self.assertEqual(result["action_status"], "verified_absent")
+            runtime.request_retry_approval(result["action_id"])
+            runtime.approve_retry(
+                result["action_id"],
+                reviewer="operator-1",
+                reason="verified absence confirmed",
+            )
             retried = runtime.retry(result["action_id"])
             runtime.close()
         client.close()
@@ -288,6 +295,12 @@ class GraphExecutionTests(unittest.TestCase):
             )
             self.assertEqual(result["route"], "await_retry")
             self.assertEqual(result["action_status"], "verified_absent")
+            runtime.request_retry_approval(result["action_id"])
+            runtime.approve_retry(
+                result["action_id"],
+                reviewer="operator-1",
+                reason="verified absence confirmed",
+            )
             retried = runtime.retry(result["action_id"])
             runtime.close()
 
