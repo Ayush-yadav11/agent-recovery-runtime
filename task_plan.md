@@ -41,8 +41,8 @@ The model is not required for the first milestone. Reliability behavior must be 
 | 4. GitHub integration | complete | Mocked client creates and inspects issues by marker |
 | 5. Acceptance and documentation | complete | Full failure matrix, demo, checks, and README are green |
 | 6. Review and contribution prep | complete | Clean tree, review complete, planning files removed, upstream candidates documented |
-| 7. Explicit human approval and restart-safe retry | planning | `v0.2.0` milestone designed |
-| 8. Verification outcome contracts | planned | Inspection distinguishes found, absent, ambiguous, and unavailable |
+| 7. Explicit human approval and restart-safe retry | complete | ApprovalRequired state, Runtime.approve/reject, persisted approval records, single-use retry |
+| 8. Verification outcome contracts | complete | VerificationOutcome distinguishes found, absent, unavailable, ambiguous |
 | 9. CI, quality, and release | planned | CI, linter, changelog, license, and `v0.1.0` |
 | 10. Additional adapters | planned | At least one adapter with a different failure model |
 | 11. Observability | planned | OpenTelemetry-compatible events for action lifecycle |
@@ -50,7 +50,7 @@ The model is not required for the first milestone. Reliability behavior must be 
 
 ## Next step
 
-Implement Phase 7: explicit human approval and restart-safe retry (`v0.2.0`). Write failing tests first, then implement: `ApprovalRequired` state, `Runtime.approve()`/`Runtime.reject()`, persisted approval records with uniqueness, and LangGraph interrupt/resume at the retry gate. See `progress.md` for the full acceptance criteria.
+Implement Phase 9: CI, quality, and release. Add GitHub Actions across Python 3.10, 3.11, 3.12, a linter, CHANGELOG, MIT license, and tag v0.1.0. Phases 7 and 8 are committed and all 65 tests pass.
 
 ## Step-by-step tasks
 
