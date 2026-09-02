@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from agent_recovery.core.actions import ActionStatus, ApprovalStatus
-
 
 _CREATE_APPROVALS = """
 CREATE TABLE IF NOT EXISTS retry_approvals (

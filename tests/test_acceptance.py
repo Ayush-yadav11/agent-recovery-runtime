@@ -130,7 +130,9 @@ class AcceptanceTests(unittest.TestCase):
             database = Path(directory) / "actions.db"
             service = FakeSideEffect("lost_response")
             first_runtime = self.make_runtime(database, service)
-            initial = first_runtime.execute("create_issue", {"title": "Login"}, idempotency_key="a-1")
+            initial = first_runtime.execute(
+                "create_issue", {"title": "Login"}, idempotency_key="a-1"
+            )
             first_runtime.close()
 
             second_runtime = self.make_runtime(database, service)

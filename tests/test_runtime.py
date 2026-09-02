@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import sqlite3
+import unittest
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
-import sqlite3
-import unittest
 
 from agent_recovery import Runtime, Tool, UnknownOutcome, VerificationOutcome
-from agent_recovery.core.store import ActionStore
 from agent_recovery.core.actions import (
     ActionResult as CoreActionResult,
+)
+from agent_recovery.core.actions import (
     Tool as CoreTool,
+)
+from agent_recovery.core.actions import (
     UnknownOutcome as CoreUnknownOutcome,
+)
+from agent_recovery.core.actions import (
     VerificationOutcome as CoreVerificationOutcome,
+)
+from agent_recovery.core.actions import (
     VerificationStatus,
 )
+from agent_recovery.core.store import ActionStore
 
 
 class FakeIssueService:
@@ -347,7 +355,8 @@ class RuntimeTests(unittest.TestCase):
                 INSERT INTO actions
                     (action_id, tool_name, arguments_json, idempotency_key, status, result_json)
                 VALUES
-                    ('legacy-1', 'create_issue', '{"title":"Login"}', 'legacy-key', 'success', '{"id":"issue-1"}');
+                    ('legacy-1', 'create_issue', '{"title":"Login"}', 'legacy-key', 'success',
+                     '{"id":"issue-1"}');
                 """
             )
             connection.close()

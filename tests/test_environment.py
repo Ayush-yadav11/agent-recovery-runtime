@@ -1,10 +1,8 @@
 import unittest
+from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
-
-from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).parents[1]
 PYPROJECT = PROJECT_ROOT / "pyproject.toml"

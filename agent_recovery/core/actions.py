@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Literal
 
-
 ActionStatus = Literal[
     "running",
     "success",

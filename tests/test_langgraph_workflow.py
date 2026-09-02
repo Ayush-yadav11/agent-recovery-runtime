@@ -4,7 +4,6 @@ from typing import Any
 
 import httpx
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import Command
 
 from agent_recovery import Runtime, Tool, UnknownOutcome
 from agent_recovery.integrations.github import GitHubClient

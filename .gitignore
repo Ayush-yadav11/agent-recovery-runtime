@@ -3,7 +3,9 @@ __pycache__/
 .venv/
 *.db
 .pytest_cache/
+.ruff_cache/
 
 task_plan.md
 findings.md
 progress.md
+

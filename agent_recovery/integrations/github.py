@@ -9,7 +9,6 @@ import httpx
 
 from agent_recovery.core.actions import UnknownOutcome
 
-
 Transport: TypeAlias = httpx.BaseTransport
 
 

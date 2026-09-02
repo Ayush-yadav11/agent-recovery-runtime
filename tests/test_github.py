@@ -8,7 +8,6 @@ import httpx
 from agent_recovery import UnknownOutcome
 from agent_recovery.integrations.github import GitHubClient
 
-
 MARKER = "<!-- agent-recovery:idempotency-key=customer-123 -->"
 
 
